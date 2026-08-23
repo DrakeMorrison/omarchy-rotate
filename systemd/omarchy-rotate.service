@@ -1,0 +1,9 @@
+[Unit]
+Description=omarchy-rotate scheduling tick (backgrounds + light/dark theme)
+After=graphical-session.target
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=oneshot
+ExecStart=@BIN@ tick
+LogLevelMax=warning

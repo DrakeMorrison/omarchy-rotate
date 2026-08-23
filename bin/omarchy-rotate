@@ -1,0 +1,615 @@
+#!/bin/bash
+
+# omarchy:summary=Rotate backgrounds on a schedule and switch light/dark themes by time of day
+# omarchy:args=<command> [args...]
+# omarchy:examples=omarchy-rotate status | omarchy-rotate bg next | omarchy-rotate theme toggle
+#
+# Works on Omarchy 3.8.x (legacy layout) and Omarchy quattro (4.x).
+# State and scheduling are driven by an idempotent `tick`, so it does not
+# matter whether the tick comes from a systemd timer, the shell plugin
+# (Service.qml), a post-boot hook, or your own hand.
+
+set -uo pipefail
+
+VERSION="1.0.0"
+CONFIG_FILE="${OMARCHY_ROTATE_CONFIG:-$HOME/.config/omarchy/rotate.conf}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-rotate"
+LOG_FILE="$STATE_DIR/rotate.log"
+LOCK_FILE="$STATE_DIR/lock"
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+PLUGIN_DIR="$(dirname "$(dirname "$SELF")")"
+
+# Omarchy's own bins may not be on PATH when we run from systemd or the shell.
+export PATH="$HOME/.local/bin:$HOME/.local/share/omarchy/bin:/usr/share/omarchy/bin:$PATH"
+
+# quattro moved the generated current-theme state to ~/.local/state.
+if [[ -f "$HOME/.local/state/omarchy/current/theme.name" ]]; then
+  OMARCHY_CURRENT="$HOME/.local/state/omarchy/current"
+  OMARCHY_FLAVOR="quattro"
+else
+  OMARCHY_CURRENT="$HOME/.config/omarchy/current"
+  OMARCHY_FLAVOR="legacy"
+fi
+USER_BACKGROUNDS_ROOT="$HOME/.config/omarchy/backgrounds"
+HOOKS_DIR="$HOME/.config/omarchy/hooks"
+
+mkdir -p "$STATE_DIR"
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+set_defaults() {
+  # Background rotation
+  BG_INTERVAL="2h"        # 30m, 1h, 2h, 4h, 1d ... or "wake" (only on boot/wake) or "off"
+  BG_THEMES="auto"        # auto = any theme with images in ~/.config/omarchy/backgrounds/<theme>/
+                          # "*" = every theme, or a space-separated list: "gruvbox catppuccin-latte"
+  BG_DIR=""               # optional single folder of images used for every rotating theme
+  BG_USER_ONLY="false"    # true = ignore the theme's built-in backgrounds, use only your own
+  BG_ORDER="random"       # random | sequential
+  BG_ON_WAKE="true"       # also rotate when the laptop boots or wakes from sleep
+  BG_WAKE_GAP="900"       # seconds without a tick that counts as "was asleep"
+
+  # Theme schedule
+  THEME_SCHEDULE="on"     # on | off
+  THEME_LIGHT="flexoki-light"
+  THEME_DARK="flexoki-dark"
+  LIGHT_AT="07:00"
+  DARK_AT="19:00"
+
+  NOTIFY="false"          # desktop notification when the background rotates
+}
+
+load_config() {
+  set_defaults
+  if [[ -f $CONFIG_FILE ]]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+  fi
+}
+
+write_default_config() {
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  cat >"$CONFIG_FILE" <<'CONF'
+# omarchy-rotate configuration (bash syntax, sourced by omarchy-rotate)
+# Changes take effect on the next tick (every 5 minutes). Run `omarchy-rotate status` to check.
+
+# ---- Background rotation --------------------------------------------------
+# How often to change the background: 30m, 1h, 2h, 4h, 1d ...
+#   "wake" = only when the laptop boots or wakes from sleep
+#   "off"  = never rotate automatically
+BG_INTERVAL="2h"
+
+# Which themes rotate their background.
+#   "auto" = any theme that has images in ~/.config/omarchy/backgrounds/<theme>/
+#            (that folder is what `omarchy theme bg install` opens)
+#   "*"    = every theme
+#   or a space-separated list of theme slugs: "gruvbox catppuccin-latte"
+BG_THEMES="auto"
+
+# Use one folder of images for every rotating theme instead of per-theme folders.
+# Leave empty to use ~/.config/omarchy/backgrounds/<theme>/ plus the theme's own backgrounds.
+BG_DIR=""
+
+# true = only use your own images, never the theme's built-in backgrounds
+BG_USER_ONLY="false"
+
+# random | sequential
+BG_ORDER="random"
+
+# Also pick a fresh background when the laptop boots or wakes from sleep
+BG_ON_WAKE="true"
+
+# ---- Theme schedule --------------------------------------------------------
+# Switch between a light and a dark theme at set times. on | off
+THEME_SCHEDULE="on"
+THEME_LIGHT="flexoki-light"
+THEME_DARK="flexoki-dark"
+LIGHT_AT="07:00"
+DARK_AT="19:00"
+
+# If you change the theme by hand, the schedule leaves it alone until the next
+# switch time. `omarchy-rotate theme toggle` flips between the pair manually.
+
+# ---- Misc ------------------------------------------------------------------
+# Show a desktop notification when the background rotates
+NOTIFY="false"
+CONF
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+log() {
+  local line
+  line="$(date '+%Y-%m-%d %H:%M:%S') $*"
+  echo "$line" >>"$LOG_FILE"
+  if [[ -t 1 ]]; then echo "$*"; fi
+  # keep the log small
+  if (( $(wc -l <"$LOG_FILE") > 1000 )); then
+    tail -n 500 "$LOG_FILE" >"$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+  fi
+}
+
+notify() {
+  [[ $NOTIFY == "true" ]] || return 0
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send "$@" >/dev/null 2>&1 || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "$@" >/dev/null 2>&1 || true
+  fi
+}
+
+die() {
+  echo "omarchy-rotate: $*" >&2
+  exit 1
+}
+
+state_get() { cat "$STATE_DIR/$1" 2>/dev/null; }
+state_set() { printf '%s\n' "$2" >"$STATE_DIR/$1"; }
+
+# "2h" -> 7200 ; "off" -> 0 ; "wake" -> -1
+parse_interval() {
+  local v=${1,,} n
+  case $v in
+    off|0|none|never) echo 0; return ;;
+    wake|boot) echo -1; return ;;
+  esac
+  if [[ $v =~ ^([0-9]+)([smhd]?)$ ]]; then
+    n=${BASH_REMATCH[1]}
+    case ${BASH_REMATCH[2]} in
+      s) echo "$n" ;;
+      m | "") echo $((n * 60)) ;;
+      h) echo $((n * 3600)) ;;
+      d) echo $((n * 86400)) ;;
+    esac
+    return
+  fi
+  echo "invalid"
+}
+
+human_interval() {
+  local s=$1
+  if (( s % 86400 == 0 )); then echo "$((s / 86400))d"
+  elif (( s % 3600 == 0 )); then echo "$((s / 3600))h"
+  elif (( s % 60 == 0 )); then echo "$((s / 60))m"
+  else echo "${s}s"; fi
+}
+
+# Seconds east of UTC for the local timezone right now.
+tz_offset() {
+  local z sign h m
+  z=$(date +%z)
+  sign=${z:0:1}; h=${z:1:2}; m=${z:3:2}
+  local off=$((10#$h * 3600 + 10#$m * 60))
+  [[ $sign == "-" ]] && off=$((-off))
+  echo "$off"
+}
+
+# "07:30" -> 450 (minutes since midnight)
+parse_hhmm() {
+  [[ $1 =~ ^([0-9]{1,2}):([0-9]{2})$ ]] || { echo "invalid"; return; }
+  echo $((10#${BASH_REMATCH[1]} * 60 + 10#${BASH_REMATCH[2]}))
+}
+
+theme_slug() {
+  echo "$1" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' ' '-'
+}
+
+current_theme() {
+  cat "$OMARCHY_CURRENT/theme.name" 2>/dev/null
+}
+
+current_background() {
+  readlink -f "$OMARCHY_CURRENT/background" 2>/dev/null
+}
+
+theme_exists() {
+  local t=$1
+  [[ -d "$HOME/.config/omarchy/themes/$t" ]] && return 0
+  [[ -n ${OMARCHY_PATH:-} && -d "$OMARCHY_PATH/themes/$t" ]] && return 0
+  [[ -d "$HOME/.local/share/omarchy/themes/$t" ]] && return 0
+  [[ -d "/usr/share/omarchy/themes/$t" ]] && return 0
+  return 1
+}
+
+# Prints NUL-separated image files found directly inside the given dirs.
+find_images() {
+  find -L "$@" -maxdepth 1 -type f \
+    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.webp' \) \
+    -print0 2>/dev/null | sort -z
+}
+
+# ---------------------------------------------------------------------------
+# Backgrounds
+# ---------------------------------------------------------------------------
+
+bg_candidates() {
+  local theme=$1
+  if [[ -n $BG_DIR ]]; then
+    find_images "${BG_DIR/#\~/$HOME}"
+  elif [[ $BG_USER_ONLY == "true" ]]; then
+    find_images "$USER_BACKGROUNDS_ROOT/$theme/"
+  else
+    find_images "$USER_BACKGROUNDS_ROOT/$theme/" "$OMARCHY_CURRENT/theme/backgrounds/"
+  fi
+}
+
+# Does background rotation apply to this theme?
+bg_active_for() {
+  local theme=$1 t
+  case $BG_THEMES in
+    "*") return 0 ;;
+    auto)
+      # With a shared folder, auto means every theme. Otherwise: the theme has its own images.
+      if [[ -n $BG_DIR ]]; then return 0; fi
+      [[ -n $(find_images "$USER_BACKGROUNDS_ROOT/$theme/" | tr -d '\0' | head -c1) ]]
+      return ;;
+  esac
+  for t in $BG_THEMES; do
+    [[ $(theme_slug "$t") == "$theme" ]] && return 0
+  done
+  return 1
+}
+
+bg_rotate() {
+  local theme reason=${1:-manual}
+  theme=$(current_theme)
+  [[ -n $theme ]] || die "no current theme found in $OMARCHY_CURRENT"
+
+  local -a candidates
+  mapfile -d '' -t candidates < <(bg_candidates "$theme")
+  local total=${#candidates[@]}
+  if (( total == 0 )); then
+    log "bg: no images found for theme '$theme' (nothing to rotate)"
+    return 1
+  fi
+
+  local current pick
+  current=$(current_background)
+  if (( total == 1 )); then
+    pick=${candidates[0]}
+  elif [[ $BG_ORDER == "sequential" ]]; then
+    local i idx=-1
+    for i in "${!candidates[@]}"; do
+      [[ $(readlink -f "${candidates[$i]}") == "$current" ]] && { idx=$i; break; }
+    done
+    pick=${candidates[$(( (idx + 1) % total ))]}
+  else
+    local -a pool=()
+    local c
+    for c in "${candidates[@]}"; do
+      [[ $(readlink -f "$c") == "$current" ]] || pool+=("$c")
+    done
+    pick=$(printf '%s\n' "${pool[@]}" | shuf -n1)
+  fi
+
+  omarchy-theme-bg-set "$pick" >/dev/null 2>&1 9>&- || die "omarchy-theme-bg-set failed for $pick"
+  bg_mark
+  log "bg: $reason -> $(basename "$pick") (theme $theme, $total candidates)"
+  notify "Background" "$(basename "$pick")" -t 2000
+}
+
+# Record "a background was just chosen" so the interval restarts from now.
+bg_mark() {
+  local interval
+  interval=$(parse_interval "$BG_INTERVAL")
+  if [[ $interval != invalid ]] && (( interval > 0 )); then
+    state_set bg-bucket "$(bg_bucket "$interval")"
+  fi
+  state_set bg-last "$(date +%s)"
+}
+
+# Clock-aligned bucket number: with 2h, buckets flip at 00:00, 02:00, 04:00 local time.
+bg_bucket() {
+  local interval=$1
+  echo $(( ($(date +%s) + $(tz_offset)) / interval ))
+}
+
+bg_tick() {
+  local wake=$1 theme interval
+  theme=$(current_theme)
+  [[ -n $theme ]] || return 0
+
+  if ! bg_active_for "$theme"; then
+    return 0
+  fi
+
+  interval=$(parse_interval "$BG_INTERVAL")
+  [[ $interval == invalid ]] && { log "bg: invalid BG_INTERVAL '$BG_INTERVAL'"; return 1; }
+  (( interval == 0 )) && return 0
+
+  if [[ $wake == 1 ]]; then
+    if [[ $BG_ON_WAKE == "true" || $interval -eq -1 ]]; then
+      bg_rotate "wake"
+    fi
+    return 0
+  fi
+
+  (( interval == -1 )) && return 0   # wake-only mode
+
+  local bucket last
+  bucket=$(bg_bucket "$interval")
+  last=$(state_get bg-bucket)
+  if [[ -z $last ]]; then
+    bg_rotate "first run"
+  elif [[ $bucket != "$last" ]]; then
+    bg_rotate "interval $(human_interval "$interval")"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Theme schedule
+# ---------------------------------------------------------------------------
+
+# Prints "light" or "dark" for the current local time.
+theme_slot_now() {
+  local now light dark
+  now=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+  light=$(parse_hhmm "$LIGHT_AT"); dark=$(parse_hhmm "$DARK_AT")
+  [[ $light == invalid || $dark == invalid ]] && { echo invalid; return; }
+  if (( light < dark )); then
+    (( now >= light && now < dark )) && echo light || echo dark
+  else
+    (( now >= light || now < dark )) && echo light || echo dark
+  fi
+}
+
+theme_for_slot() {
+  case $1 in
+    light) theme_slug "$THEME_LIGHT" ;;
+    dark) theme_slug "$THEME_DARK" ;;
+  esac
+}
+
+# Next time (epoch) the slot flips, for status output.
+theme_next_switch() {
+  local slot=$1 at
+  [[ $slot == light ]] && at=$DARK_AT || at=$LIGHT_AT
+  local t
+  t=$(date -d "today $at" +%s)
+  (( t <= $(date +%s) )) && t=$(date -d "tomorrow $at" +%s)
+  echo "$t"
+}
+
+theme_apply() {
+  local target=$1 reason=$2 current
+  current=$(current_theme)
+  if ! theme_exists "$target"; then
+    log "theme: '$target' does not exist, not switching ($reason)"
+    return 1
+  fi
+  if [[ $current == "$target" ]]; then
+    log "theme: already on $target ($reason)"
+    return 0
+  fi
+  log "theme: $reason -> $target (was $current)"
+  omarchy-theme-set "$target" >/dev/null 2>&1 9>&- || { log "theme: omarchy-theme-set $target failed"; return 1; }
+}
+
+theme_tick() {
+  [[ $THEME_SCHEDULE == "on" ]] || return 0
+  local slot last
+  slot=$(theme_slot_now)
+  [[ $slot == invalid ]] && { log "theme: invalid LIGHT_AT/DARK_AT"; return 1; }
+  last=$(state_get theme-slot)
+  if [[ $slot != "$last" ]]; then
+    theme_apply "$(theme_for_slot "$slot")" "schedule ($slot${last:+, was $last})"
+    state_set theme-slot "$slot"
+  fi
+}
+
+# Force the scheduled theme right now, regardless of manual changes.
+theme_sync() {
+  local slot
+  slot=$(theme_slot_now)
+  [[ $slot == invalid ]] && die "invalid LIGHT_AT/DARK_AT in $CONFIG_FILE"
+  theme_apply "$(theme_for_slot "$slot")" "sync ($slot)"
+  state_set theme-slot "$slot"
+}
+
+theme_toggle() {
+  local current light dark target
+  current=$(current_theme)
+  light=$(theme_for_slot light); dark=$(theme_for_slot dark)
+  if [[ $current == "$light" ]]; then target=$dark; else target=$light; fi
+  theme_apply "$target" "toggle"
+  # Remember the current slot so the schedule doesn't immediately undo this.
+  state_set theme-slot "$(theme_slot_now)"
+}
+
+# ---------------------------------------------------------------------------
+# Tick
+# ---------------------------------------------------------------------------
+
+tick() {
+  local wake=0
+  [[ ${1:-} == "--wake" ]] && wake=1
+
+  # Serialize: the systemd timer, the shell plugin and hooks may all tick.
+  # External commands are run with 9>&- so long-lived children (swaybg, waybar)
+  # spawned by omarchy-theme-set don't inherit the lock and hold it forever.
+  exec 9>"$LOCK_FILE"
+  flock -w 30 9 || die "could not acquire lock"
+
+  local now last_tick
+  now=$(date +%s)
+  last_tick=$(state_get last-tick)
+  # A long gap between ticks means the machine was asleep (or just booted).
+  if [[ $wake == 0 && -n $last_tick ]] && (( now - last_tick > BG_WAKE_GAP )); then
+    wake=1
+  fi
+  state_set last-tick "$now"
+
+  theme_tick
+  # Theme change already picked a background and marked it; re-read the theme.
+  bg_tick "$wake"
+}
+
+# ---------------------------------------------------------------------------
+# Install / uninstall (legacy 3.8.x wiring; harmless on quattro)
+# ---------------------------------------------------------------------------
+
+SYSTEMD_DIR="$HOME/.config/systemd/user"
+
+install_hook() {
+  local type=$1
+  local dir="$HOOKS_DIR/$type.d"
+  mkdir -p "$dir"
+  cat >"$dir/omarchy-rotate" <<HOOK
+#!/bin/bash
+# Installed by omarchy-rotate. Remove with: omarchy-rotate uninstall
+$SELF $2
+HOOK
+  chmod 755 "$dir/omarchy-rotate"
+}
+
+do_install() {
+  mkdir -p "$HOME/.local/bin" "$SYSTEMD_DIR"
+  ln -sfn "$SELF" "$HOME/.local/bin/omarchy-rotate"
+
+  [[ -f $CONFIG_FILE ]] || { write_default_config; echo "Wrote default config: $CONFIG_FILE"; }
+
+  # Hooks: restart the background interval when a theme is set; tick on boot.
+  install_hook theme-set "bg mark"
+  install_hook post-boot "tick --wake"
+
+  # Timer: tick every 5 minutes. OnCalendar (wall clock) fires promptly after resume.
+  sed "s|@BIN@|$SELF|g" "$PLUGIN_DIR/systemd/omarchy-rotate.service" >"$SYSTEMD_DIR/omarchy-rotate.service"
+  cp "$PLUGIN_DIR/systemd/omarchy-rotate.timer" "$SYSTEMD_DIR/omarchy-rotate.timer"
+  systemctl --user daemon-reload
+  systemctl --user enable --now omarchy-rotate.timer >/dev/null 2>&1
+
+  echo "Installed:"
+  echo "  CLI     ~/.local/bin/omarchy-rotate -> $SELF"
+  echo "  Config  $CONFIG_FILE"
+  echo "  Hooks   $HOOKS_DIR/{theme-set,post-boot}.d/omarchy-rotate"
+  echo "  Timer   omarchy-rotate.timer (every 5 min)"
+  if [[ $OMARCHY_FLAVOR == quattro ]]; then
+    echo
+    echo "Omarchy quattro detected. To also register this as a shell plugin:"
+    echo "  omarchy plugin add $PLUGIN_DIR --enable"
+    echo "(the shell plugin adds 'omarchy-shell rotate next|toggle|status' IPC and ticks on its own)"
+  fi
+}
+
+do_uninstall() {
+  systemctl --user disable --now omarchy-rotate.timer >/dev/null 2>&1
+  rm -f "$SYSTEMD_DIR/omarchy-rotate.service" "$SYSTEMD_DIR/omarchy-rotate.timer"
+  systemctl --user daemon-reload
+  rm -f "$HOOKS_DIR/theme-set.d/omarchy-rotate" "$HOOKS_DIR/post-boot.d/omarchy-rotate"
+  rm -f "$HOME/.local/bin/omarchy-rotate"
+  echo "Removed timer, hooks and CLI symlink. Kept config ($CONFIG_FILE) and state ($STATE_DIR)."
+}
+
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
+
+status() {
+  local theme interval slot
+  theme=$(current_theme)
+  echo "omarchy-rotate $VERSION  (omarchy: $OMARCHY_FLAVOR, config: $CONFIG_FILE)"
+  echo
+  echo "Theme:       ${theme:-unknown}"
+  echo "Background:  $(basename "$(current_background)" 2>/dev/null)"
+  echo
+
+  interval=$(parse_interval "$BG_INTERVAL")
+  if bg_active_for "$theme"; then
+    local -a c; mapfile -d '' -t c < <(bg_candidates "$theme")
+    echo "Rotation:    ON for this theme (${#c[@]} images, $BG_ORDER)"
+    if [[ $interval == invalid ]]; then echo "Interval:    INVALID ($BG_INTERVAL)"
+    elif (( interval == 0 )); then echo "Interval:    off"
+    elif (( interval == -1 )); then echo "Interval:    on wake/boot only"
+    else
+      local b; b=$(bg_bucket "$interval")
+      echo "Interval:    every $(human_interval "$interval"), next at $(date -d @$(( (b + 1) * interval - $(tz_offset) )) '+%a %H:%M')"
+    fi
+    echo "On wake:     $BG_ON_WAKE"
+  else
+    echo "Rotation:    off for this theme (BG_THEMES=$BG_THEMES)"
+    if [[ $BG_THEMES == auto && -z $BG_DIR ]]; then
+      echo "             add images to $USER_BACKGROUNDS_ROOT/$theme/ to enable"
+    fi
+  fi
+  echo
+
+  if [[ $THEME_SCHEDULE == on ]]; then
+    slot=$(theme_slot_now)
+    echo "Schedule:    light $LIGHT_AT -> $(theme_slug "$THEME_LIGHT"), dark $DARK_AT -> $(theme_slug "$THEME_DARK")"
+    if [[ $slot == invalid ]]; then echo "             INVALID LIGHT_AT/DARK_AT"
+    else
+      echo "Now:         $slot slot, next switch $(date -d @"$(theme_next_switch "$slot")" '+%a %H:%M') -> $(theme_for_slot "$([[ $slot == light ]] && echo dark || echo light)")"
+      [[ $(state_get theme-slot) != "$slot" ]] && echo "             (pending: will apply on next tick)"
+    fi
+  else
+    echo "Schedule:    off"
+  fi
+  echo
+
+  if systemctl --user is-active omarchy-rotate.timer >/dev/null 2>&1; then
+    echo "Timer:       active ($(systemctl --user list-timers omarchy-rotate.timer --no-legend 2>/dev/null | awk '{print $1, $2, $3, $4}'))"
+  else
+    echo "Timer:       not active (run: omarchy-rotate install)"
+  fi
+  local lt; lt=$(state_get last-tick)
+  [[ -n $lt ]] && echo "Last tick:   $(date -d @"$lt" '+%a %H:%M:%S')"
+}
+
+usage() {
+  cat <<USAGE
+Usage: omarchy-rotate <command>
+
+  status                 Show what rotation and the schedule will do next
+  tick [--wake]          Run one scheduling pass (what the timer calls)
+  bg next                Change the background now
+  bg mark                Restart the background interval (used by the theme-set hook)
+  bg list                List the images rotation would pick from
+  theme toggle           Flip between THEME_LIGHT and THEME_DARK
+  theme light|dark       Switch to that theme of the pair
+  theme sync             Apply whatever the schedule says right now
+  config                 Edit $CONFIG_FILE (creates it if missing)
+  log                    Show recent activity
+  install | uninstall    Wire/unwire the timer, hooks and CLI symlink
+  enable | disable       Start/stop the systemd timer
+USAGE
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+load_config
+
+case ${1:-} in
+  tick) tick "${2:-}" ;;
+  status) status ;;
+  bg)
+    case ${2:-} in
+      next) bg_rotate "manual" ;;
+      mark) bg_mark ;;
+      list) bg_candidates "$(current_theme)" | tr '\0' '\n' ;;
+      *) usage; exit 1 ;;
+    esac ;;
+  theme)
+    case ${2:-} in
+      toggle) theme_toggle ;;
+      light) theme_apply "$(theme_for_slot light)" "manual"; state_set theme-slot "$(theme_slot_now)" ;;
+      dark) theme_apply "$(theme_for_slot dark)" "manual"; state_set theme-slot "$(theme_slot_now)" ;;
+      sync) theme_sync ;;
+      *) usage; exit 1 ;;
+    esac ;;
+  config)
+    [[ -f $CONFIG_FILE ]] || write_default_config
+    if [[ ${2:-} == "--init" ]]; then echo "$CONFIG_FILE"; else ${EDITOR:-nano} "$CONFIG_FILE"; fi ;;
+  log) tail -n "${2:-30}" "$LOG_FILE" 2>/dev/null ;;
+  install) do_install ;;
+  uninstall) do_uninstall ;;
+  enable) systemctl --user enable --now omarchy-rotate.timer ;;
+  disable) systemctl --user disable --now omarchy-rotate.timer ;;
+  version | --version) echo "$VERSION" ;;
+  -h | --help | help | "") usage ;;
+  *) usage; exit 1 ;;
+esac

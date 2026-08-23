@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "drake.rotate",
+  "name": "Rotate",
+  "version": "1.0.0",
+  "author": "Drake Morrison",
+  "description": "Rotate backgrounds from a folder on a schedule and switch between a light and a dark theme by time of day.",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}

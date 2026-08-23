@@ -1,0 +1,43 @@
+# omarchy-rotate configuration (bash syntax, sourced by omarchy-rotate)
+# Changes take effect on the next tick (every 5 minutes). Run `omarchy-rotate status` to check.
+
+# ---- Background rotation --------------------------------------------------
+# How often to change the background: 30m, 1h, 2h, 4h, 1d ...
+#   "wake" = only when the laptop boots or wakes from sleep
+#   "off"  = never rotate automatically
+BG_INTERVAL="2h"
+
+# Which themes rotate their background.
+#   "auto" = any theme that has images in ~/.config/omarchy/backgrounds/<theme>/
+#            (that folder is what `omarchy theme bg install` opens)
+#   "*"    = every theme
+#   or a space-separated list of theme slugs: "gruvbox catppuccin-latte"
+BG_THEMES="auto"
+
+# Use one folder of images for every rotating theme instead of per-theme folders.
+# Leave empty to use ~/.config/omarchy/backgrounds/<theme>/ plus the theme's own backgrounds.
+BG_DIR=""
+
+# true = only use your own images, never the theme's built-in backgrounds
+BG_USER_ONLY="false"
+
+# random | sequential
+BG_ORDER="random"
+
+# Also pick a fresh background when the laptop boots or wakes from sleep
+BG_ON_WAKE="true"
+
+# ---- Theme schedule --------------------------------------------------------
+# Switch between a light and a dark theme at set times. on | off
+THEME_SCHEDULE="on"
+THEME_LIGHT="flexoki-light"
+THEME_DARK="flexoki-dark"
+LIGHT_AT="07:00"
+DARK_AT="19:00"
+
+# If you change the theme by hand, the schedule leaves it alone until the next
+# switch time. `omarchy-rotate theme toggle` flips between the pair manually.
+
+# ---- Misc ------------------------------------------------------------------
+# Show a desktop notification when the background rotates
+NOTIFY="false"
