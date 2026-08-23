@@ -1,8 +1,8 @@
 # omarchy-rotate
 
 Rotate your desktop background from a folder on a schedule, and switch between a
-light and a dark theme at set times of day. Works on Omarchy 3.8.x today and is
-packaged as an Omarchy quattro (4.x) shell plugin for after you upgrade.
+light and a dark theme at set times of day. Ships as an Omarchy quattro (4.x)
+shell plugin; also works on Omarchy 3.8.x via a systemd user timer.
 
 ## What it does
 
@@ -15,20 +15,7 @@ packaged as an Omarchy quattro (4.x) shell plugin for after you upgrade.
 
 ## Install
 
-### Omarchy 3.8.x (now)
-
-```bash
-git clone https://github.com/DrakeMorrison/omarchy-rotate ~/Projects/omarchy-rotate
-~/Projects/omarchy-rotate/install.sh
-omarchy-rotate config      # edit the settings
-omarchy-rotate status      # see what will happen next
-```
-
-`install.sh` symlinks the CLI into `~/.local/bin`, writes `~/.config/omarchy/rotate.conf`
-(if missing), installs two omarchy hooks (`theme-set.d`, `post-boot.d`) and a systemd
-user timer that runs a scheduling pass every 5 minutes. `./uninstall.sh` reverses it.
-
-### Omarchy quattro (after the upgrade)
+### Omarchy quattro (4.x)
 
 The repo root is a shell plugin (`manifest.json` + `Service.qml`, kind `service`):
 
@@ -49,6 +36,19 @@ omarchy-shell rotate status
 
 You can still run `install.sh` on quattro for the CLI symlink and config; the systemd
 timer and hooks are then redundant but harmless (ticks are idempotent and serialized).
+
+### Omarchy 3.8.x
+
+```bash
+git clone https://github.com/DrakeMorrison/omarchy-rotate ~/Projects/omarchy-rotate
+~/Projects/omarchy-rotate/install.sh
+omarchy-rotate config      # edit the settings
+omarchy-rotate status      # see what will happen next
+```
+
+`install.sh` symlinks the CLI into `~/.local/bin`, writes `~/.config/omarchy/rotate.conf`
+(if missing), installs two omarchy hooks (`theme-set.d`, `post-boot.d`) and a systemd
+user timer that runs a scheduling pass every 5 minutes. `./uninstall.sh` reverses it.
 
 ## Configuration
 
