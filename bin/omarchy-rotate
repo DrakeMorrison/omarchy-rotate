@@ -549,10 +549,20 @@ status() {
   fi
   echo
 
+  local plugin_on=0
+  if [[ $OMARCHY_FLAVOR == quattro ]] && command -v omarchy-plugin-list >/dev/null 2>&1 &&
+    omarchy-plugin-list --json 2>/dev/null | jq -e 'any(.[]; .id == "drake.rotate" and .enabled == true)' >/dev/null 2>&1; then
+    plugin_on=1
+    echo "Plugin:      drake.rotate enabled in omarchy-shell (ticks every 5 min)"
+  fi
   if systemctl --user is-active omarchy-rotate.timer >/dev/null 2>&1; then
     echo "Timer:       active ($(systemctl --user list-timers omarchy-rotate.timer --no-legend 2>/dev/null | awk '{print $1, $2, $3, $4}'))"
-  else
-    echo "Timer:       not active (run: omarchy-rotate install)"
+  elif (( ! plugin_on )); then
+    if [[ $OMARCHY_FLAVOR == quattro ]]; then
+      echo "Ticker:      none (run: omarchy plugin add ~/Projects/omarchy-rotate --enable, or omarchy-rotate install)"
+    else
+      echo "Timer:       not active (run: omarchy-rotate install)"
+    fi
   fi
   local lt; lt=$(state_get last-tick)
   [[ -n $lt ]] && echo "Last tick:   $(date -d @"$lt" '+%a %H:%M:%S')"
