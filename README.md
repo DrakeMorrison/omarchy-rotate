@@ -37,6 +37,13 @@ omarchy-shell rotate status
 You can still run `install.sh` on quattro for the CLI symlink and config; the systemd
 timer and hooks are then redundant but harmless (ticks are idempotent and serialized).
 
+To remove it:
+
+```bash
+omarchy plugin remove drake.rotate
+rm -rf ~/.config/omarchy/rotate.conf ~/.local/state/omarchy-rotate   # optional: config + state
+```
+
 ### Omarchy 3.8.x
 
 ```bash
@@ -49,6 +56,10 @@ omarchy-rotate status      # see what will happen next
 `install.sh` symlinks the CLI into `~/.local/bin`, writes `~/.config/omarchy/rotate.conf`
 (if missing), installs two omarchy hooks (`theme-set.d`, `post-boot.d`) and a systemd
 user timer that runs a scheduling pass every 5 minutes. `./uninstall.sh` reverses it.
+
+The plugin never edits your Omarchy config files: it only calls `omarchy theme set` /
+`omarchy theme bg set` (the same commands the menu uses) and keeps its own state in
+`~/.local/state/omarchy-rotate/`. The config file is only written if it doesn't exist.
 
 ## Configuration
 
@@ -110,3 +121,14 @@ manifest.json          quattro plugin manifest (id: drake.rotate)
 systemd/               user timer + service used on 3.8.x
 install.sh             = omarchy-rotate install
 ```
+
+## Dependencies and license
+
+Runtime dependencies are all part of a stock Omarchy install: `bash`, `coreutils`,
+`util-linux` (`flock`), `jq`, and the `omarchy` CLI (`omarchy theme set`,
+`omarchy theme bg set`, `omarchy-shell`). On quattro the service runs inside
+`omarchy-shell` (Quickshell). Desktop notifications (`NOTIFY="true"`) use
+`omarchy-notification-send` or `notify-send` if present. Nothing is downloaded at
+install or run time, and nothing needs root.
+
+MIT — see [LICENSE](LICENSE).
