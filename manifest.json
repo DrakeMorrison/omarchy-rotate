@@ -6,9 +6,18 @@
   "author": "Drake Morrison",
   "description": "Rotate backgrounds from a folder on a schedule and switch between a light and a dark theme by time of day.",
   "kinds": [
-    "service"
+    "service",
+    "bar-widget"
   ],
   "entryPoints": {
-    "service": "Service.qml"
+    "service": "Service.qml",
+    "barWidget": "RotateButton.qml"
+  },
+  "barWidget": {
+    "displayName": "Rotate",
+    "description": "Next background on click, light/dark theme toggle on right click",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
   }
 }

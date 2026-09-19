@@ -301,6 +301,32 @@ bg_mark() {
   state_set bg-last "$(date +%s)"
 }
 
+# Called after a theme change. omarchy-theme-set applies the theme's own
+# background, which with BG_DIR is not one of ours: pick one from the pool right
+# away instead of leaving it up until the next interval. If the background is
+# already from the pool, just restart the interval.
+bg_sync() {
+  # theme.name is written before omarchy-theme-set has set the background; wait
+  # for it, and for any tick that is switching the theme, to finish.
+  local theme_lock="${XDG_RUNTIME_DIR:-/tmp}/omarchy-theme-set.lock"
+  [[ -e $theme_lock ]] && flock -w 30 "$theme_lock" true 2>/dev/null
+  exec 9>"$LOCK_FILE"
+  flock -w 60 9 || die "could not acquire lock"
+
+  local theme current c
+  theme=$(current_theme)
+  if [[ -n $theme ]] && bg_active_for "$theme"; then
+    current=$(current_background)
+    local -a candidates
+    mapfile -d '' -t candidates < <(bg_candidates "$theme")
+    for c in "${candidates[@]}"; do
+      [[ $(readlink -f "$c") == "$current" ]] && { bg_mark; return 0; }
+    done
+    (( ${#candidates[@]} > 0 )) && { bg_rotate "theme change"; return; }
+  fi
+  bg_mark
+}
+
 # Show or change BG_INTERVAL. Setting it rewrites that one line of the config
 # and restarts the interval, so the next change lands on the new schedule.
 bg_interval() {
@@ -496,8 +522,8 @@ do_install() {
 
   [[ -f $CONFIG_FILE ]] || { write_default_config; echo "Wrote default config: $CONFIG_FILE"; }
 
-  # Hooks: restart the background interval when a theme is set; tick on boot.
-  install_hook theme-set "bg mark"
+  # Hooks: bring the background back to the pool when a theme is set; tick on boot.
+  install_hook theme-set "bg sync"
   install_hook post-boot "tick --wake"
 
   # Timer: tick every 5 minutes. OnCalendar (wall clock) fires promptly after resume.
@@ -601,7 +627,8 @@ Usage: omarchy-rotate <command>
   tick [--wake]          Run one scheduling pass (what the timer calls)
   interval [30m|1h|...]  Show or set how often the background rotates (also: wake, off)
   bg next                Change the background now
-  bg mark                Restart the background interval (used by the theme-set hook)
+  bg mark                Restart the background interval
+  bg sync                After a theme change: pick a background from the pool if the theme brought its own
   bg list                List the images rotation would pick from
   theme toggle           Flip between THEME_LIGHT and THEME_DARK
   theme light|dark       Switch to that theme of the pair
@@ -627,6 +654,7 @@ case ${1:-} in
     case ${2:-} in
       next) bg_rotate "manual" ;;
       mark) bg_mark ;;
+      sync) bg_sync ;;
       list) bg_candidates "$(current_theme)" | tr '\0' '\n' ;;
       *) usage; exit 1 ;;
     esac ;;

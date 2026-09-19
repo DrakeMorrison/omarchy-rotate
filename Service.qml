@@ -62,8 +62,9 @@ Item {
     themeWatch.reload()
   }
 
-  // When the theme changes (by hand, menu, or our own schedule), omarchy already
-  // picked a background for it. Restart the rotation interval from now.
+  // When the theme changes (by hand, menu, or our own schedule), omarchy applies
+  // the theme's own background. `bg sync` swaps it for one from the rotation pool
+  // (or just restarts the interval if it already is one).
   FileView {
     id: themeWatch
     path: root.themeNameFile
@@ -71,7 +72,7 @@ Item {
     onFileChanged: reload()
     onLoaded: {
       var theme = String(text()).trim()
-      if (theme && root.lastTheme && theme !== root.lastTheme) root.run(["bg", "mark"])
+      if (theme && root.lastTheme && theme !== root.lastTheme) root.run(["bg", "sync"])
       root.lastTheme = theme
     }
   }

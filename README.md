@@ -17,7 +17,7 @@ shell plugin; also works on Omarchy 3.8.x via a systemd user timer.
 
 ### Omarchy quattro (4.x)
 
-The repo root is a shell plugin (`manifest.json` + `Service.qml`, kind `service`):
+The repo root is a shell plugin (`manifest.json`, a `service` and a `bar-widget`):
 
 ```bash
 omarchy plugin add https://github.com/DrakeMorrison/omarchy-rotate.git --enable
@@ -26,7 +26,7 @@ omarchy plugin add ~/Projects/omarchy-rotate --enable
 ```
 
 The shell service ticks every 5 minutes on its own, ticks with `--wake` when the
-shell starts, restarts the interval when the theme changes, and adds IPC:
+shell starts, swaps in a background from your pool when the theme changes (themes bring their own), and adds IPC:
 
 ```bash
 omarchy-shell rotate next          # change the background now
@@ -34,6 +34,16 @@ omarchy-shell rotate interval 1h   # change how often the background rotates
 omarchy-shell rotate toggle        # flip light/dark
 omarchy-shell rotate status
 ```
+
+It also puts a button on the bar (right section by default; drag it, or
+`omarchy bar move drake.rotate ...`, to put it elsewhere):
+
+| Action | Does |
+|---|---|
+| left click | change the background now |
+| right click | flip light/dark |
+| middle click | open `rotate.conf` in your editor |
+| hover | current background, next rotation, next theme switch |
 
 You can still run `install.sh` on quattro for the CLI symlink and config; the systemd
 timer and hooks are then redundant but harmless (ticks are idempotent and serialized).
@@ -127,6 +137,7 @@ whether the background's clock bucket changed. State lives in
 ```
 bin/omarchy-rotate     the whole engine (bash)
 Service.qml            quattro shell service: timer + theme watch + IPC
+RotateButton.qml       quattro bar button: next background, theme toggle, status tooltip
 manifest.json          quattro plugin manifest (id: drake.rotate)
 systemd/               user timer + service used on 3.8.x
 install.sh             = omarchy-rotate install
