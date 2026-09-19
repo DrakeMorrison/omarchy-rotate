@@ -31,6 +31,7 @@ shell starts, swaps in a background from your pool when the theme changes (theme
 ```bash
 omarchy-shell rotate next          # change the background now
 omarchy-shell rotate interval 1h   # change how often the background rotates
+omarchy-shell rotate folder all    # or "gruvbox gruvbox-light": which themes pull from BG_DIR
 omarchy-shell rotate toggle        # flip light/dark
 omarchy-shell rotate status
 ```
@@ -80,7 +81,8 @@ or when you run `omarchy-rotate interval <value>` (which rewrites just the `BG_I
 ```bash
 BG_INTERVAL="2h"          # 30m, 1h, 2h, 4h, 1d ... | "wake" (boot/wake only) | "off"
 BG_THEMES="auto"          # auto | "*" | "gruvbox catppuccin-latte"
-BG_DIR=""                 # one folder of images for every rotating theme (optional)
+BG_DIR=""                 # one folder of images instead of per-theme folders (optional)
+BG_DIR_THEMES="*"         # "*" = every theme pulls from BG_DIR | "gruvbox gruvbox-light" = only those
 BG_USER_ONLY="false"      # true = ignore the theme's built-in backgrounds
 BG_ORDER="random"         # random | sequential
 BG_ON_WAKE="true"         # fresh background on boot / wake from sleep
@@ -101,6 +103,18 @@ omarchy-rotate interval 1h     # 30m, 1h, 2h, 4h, 1d ... | wake | off
 omarchy-rotate interval        # show the current value
 ```
 
+With a `BG_DIR`, choose who it applies to:
+
+```bash
+omarchy-rotate folder all                    # the folder overrides every theme's own backgrounds
+omarchy-rotate folder gruvbox gruvbox-light  # only these pull from the folder
+omarchy-rotate folder                        # show the current choice
+```
+
+In the second form every other theme keeps its own backgrounds: left alone with
+`BG_THEMES="auto"` (unless you gave that theme images of its own), rotated
+through with `BG_THEMES="*"`. The change applies to the current theme straight away.
+
 Intervals are clock-aligned: `2h` flips at 00:00, 02:00, 04:00 … local time;
 `1d` flips at midnight (or on the first wake after it, with `BG_ON_WAKE`).
 
@@ -109,6 +123,7 @@ Intervals are clock-aligned: `2h` flips at 00:00, 02:00, 04:00 … local time;
 ```
 omarchy-rotate status            what rotation and the schedule will do next
 omarchy-rotate interval [1h]     show or set how often the background rotates
+omarchy-rotate folder [all|...]  show or set which themes pull from BG_DIR
 omarchy-rotate bg next           change the background now
 omarchy-rotate bg list           images it would pick from for the current theme
 omarchy-rotate theme toggle      flip between THEME_LIGHT and THEME_DARK

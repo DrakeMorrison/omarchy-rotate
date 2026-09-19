@@ -44,7 +44,9 @@ set_defaults() {
   BG_INTERVAL="2h"        # 30m, 1h, 2h, 4h, 1d ... or "wake" (only on boot/wake) or "off"
   BG_THEMES="auto"        # auto = any theme with images in ~/.config/omarchy/backgrounds/<theme>/
                           # "*" = every theme, or a space-separated list: "gruvbox catppuccin-latte"
-  BG_DIR=""               # optional single folder of images used for every rotating theme
+  BG_DIR=""               # optional single folder of images, instead of per-theme folders
+  BG_DIR_THEMES="*"       # which themes pull from BG_DIR: "*" = all of them, or a list
+                          # ("gruvbox gruvbox-light"); the rest keep their own backgrounds
   BG_USER_ONLY="false"    # true = ignore the theme's built-in backgrounds, use only your own
   BG_ORDER="random"       # random | sequential
   BG_ON_WAKE="true"       # also rotate when the laptop boots or wakes from sleep
@@ -87,9 +89,16 @@ BG_INTERVAL="2h"
 #   or a space-separated list of theme slugs: "gruvbox catppuccin-latte"
 BG_THEMES="auto"
 
-# Use one folder of images for every rotating theme instead of per-theme folders.
+# Use one folder of images instead of per-theme folders.
 # Leave empty to use ~/.config/omarchy/backgrounds/<theme>/ plus the theme's own backgrounds.
 BG_DIR=""
+
+# Which themes pull from BG_DIR (`omarchy-rotate folder ...` sets this for you).
+#   "*"  = every theme: the folder overrides each theme's own backgrounds
+#   or a space-separated list of theme slugs: "gruvbox gruvbox-light"
+#          only those use the folder; every other theme keeps its own backgrounds
+#          (and rotates through them or not according to BG_THEMES)
+BG_DIR_THEMES="*"
 
 # true = only use your own images, never the theme's built-in backgrounds
 BG_USER_ONLY="false"
@@ -225,9 +234,20 @@ find_images() {
 # Backgrounds
 # ---------------------------------------------------------------------------
 
+# Does this theme take its backgrounds from BG_DIR?
+bg_uses_dir() {
+  local theme=$1 t
+  [[ -n $BG_DIR ]] || return 1
+  case $BG_DIR_THEMES in "*" | all | "") return 0 ;; esac
+  for t in $BG_DIR_THEMES; do
+    [[ $(theme_slug "$t") == "$theme" ]] && return 0
+  done
+  return 1
+}
+
 bg_candidates() {
   local theme=$1
-  if [[ -n $BG_DIR ]]; then
+  if bg_uses_dir "$theme"; then
     find_images "${BG_DIR/#\~/$HOME}"
   elif [[ $BG_USER_ONLY == "true" ]]; then
     find_images "$USER_BACKGROUNDS_ROOT/$theme/"
@@ -242,8 +262,8 @@ bg_active_for() {
   case $BG_THEMES in
     "*") return 0 ;;
     auto)
-      # With a shared folder, auto means every theme. Otherwise: the theme has its own images.
-      if [[ -n $BG_DIR ]]; then return 0; fi
+      # A theme that pulls from the shared folder rotates. Otherwise: it has its own images.
+      if bg_uses_dir "$theme"; then return 0; fi
       [[ -n $(find_images "$USER_BACKGROUNDS_ROOT/$theme/" | tr -d '\0' | head -c1) ]]
       return ;;
   esac
@@ -313,18 +333,63 @@ bg_sync() {
   exec 9>"$LOCK_FILE"
   flock -w 60 9 || die "could not acquire lock"
 
+  bg_apply "theme change"
+}
+
+# Make the background on screen agree with the config right now: from the pool
+# if this theme rotates, back to one of the theme's own if it does not.
+bg_apply() {
   local theme current c
   theme=$(current_theme)
-  if [[ -n $theme ]] && bg_active_for "$theme"; then
-    current=$(current_background)
+  [[ -n $theme ]] || return 0
+  current=$(current_background)
+  if bg_active_for "$theme"; then
     local -a candidates
     mapfile -d '' -t candidates < <(bg_candidates "$theme")
     for c in "${candidates[@]}"; do
       [[ $(readlink -f "$c") == "$current" ]] && { bg_mark; return 0; }
     done
-    (( ${#candidates[@]} > 0 )) && { bg_rotate "theme change"; return; }
+    (( ${#candidates[@]} > 0 )) && { bg_rotate "${1:-config change}"; return; }
+  elif [[ -n $BG_DIR && $current == "$(readlink -f "${BG_DIR/#\~/$HOME}")"/* ]]; then
+    omarchy-theme-bg-next >/dev/null 2>&1 9>&- && log "bg: ${1:-config change} -> theme's own background (theme $theme)"
   fi
   bg_mark
+}
+
+# Show or change which themes pull from BG_DIR. Rewrites the BG_DIR_THEMES line
+# of the config and applies the result to the current theme.
+bg_folder() {
+  if (( $# == 0 )); then
+    if [[ -z $BG_DIR ]]; then echo "no folder set (BG_DIR is empty)"
+    elif [[ $BG_DIR_THEMES == "*" || $BG_DIR_THEMES == all || -z $BG_DIR_THEMES ]]; then echo "$BG_DIR for every theme"
+    else echo "$BG_DIR for: $BG_DIR_THEMES"; fi
+    return
+  fi
+  [[ -n $BG_DIR ]] || die "set BG_DIR in $CONFIG_FILE first (omarchy-rotate config)"
+
+  local value t slug
+  if [[ $1 == all || $1 == "*" ]]; then
+    value="*"
+  else
+    value=""
+    for t in "$@"; do
+      slug=$(theme_slug "$t")
+      theme_exists "$slug" || die "no theme called '$slug' (see: omarchy theme list)"
+      value+="${value:+ }$slug"
+    done
+  fi
+
+  if grep -qE '^[[:space:]]*BG_DIR_THEMES=' "$CONFIG_FILE"; then
+    sed -i --follow-symlinks -E "s|^[[:space:]]*BG_DIR_THEMES=.*|BG_DIR_THEMES=\"$value\"|" "$CONFIG_FILE"
+  elif grep -qE '^[[:space:]]*BG_DIR=' "$CONFIG_FILE"; then
+    sed -i --follow-symlinks -E "0,/^[[:space:]]*BG_DIR=.*/s||&\nBG_DIR_THEMES=\"$value\"|" "$CONFIG_FILE"
+  else
+    printf '\nBG_DIR_THEMES="%s"\n' "$value" >>"$CONFIG_FILE"
+  fi
+
+  BG_DIR_THEMES=$value
+  log "bg: folder themes set to $value"
+  bg_apply "folder change"
 }
 
 # Show or change BG_INTERVAL. Setting it rewrites that one line of the config
@@ -571,6 +636,9 @@ status() {
   if bg_active_for "$theme"; then
     local -a c; mapfile -d '' -t c < <(bg_candidates "$theme")
     echo "Rotation:    ON for this theme (${#c[@]} images, $BG_ORDER)"
+    if ! bg_uses_dir "$theme"; then echo "Source:      this theme's own backgrounds"
+    elif [[ $BG_DIR_THEMES == "*" || $BG_DIR_THEMES == all || -z $BG_DIR_THEMES ]]; then echo "Source:      $BG_DIR (every theme)"
+    else echo "Source:      $BG_DIR (only: $BG_DIR_THEMES)"; fi
     if [[ $interval == invalid ]]; then echo "Interval:    INVALID ($BG_INTERVAL)"
     elif (( interval == 0 )); then echo "Interval:    off"
     elif (( interval == -1 )); then echo "Interval:    on wake/boot only"
@@ -583,6 +651,8 @@ status() {
     echo "Rotation:    off for this theme (BG_THEMES=$BG_THEMES)"
     if [[ $BG_THEMES == auto && -z $BG_DIR ]]; then
       echo "             add images to $USER_BACKGROUNDS_ROOT/$theme/ to enable"
+    elif [[ -n $BG_DIR ]]; then
+      echo "             $BG_DIR is only for: $BG_DIR_THEMES (omarchy-rotate folder all|<themes>)"
     fi
   fi
   echo
@@ -626,6 +696,8 @@ Usage: omarchy-rotate <command>
   status                 Show what rotation and the schedule will do next
   tick [--wake]          Run one scheduling pass (what the timer calls)
   interval [30m|1h|...]  Show or set how often the background rotates (also: wake, off)
+  folder [all|<themes>]  Show or set which themes pull from BG_DIR: all of them, or only
+                         the ones listed (the rest keep their own backgrounds)
   bg next                Change the background now
   bg mark                Restart the background interval
   bg sync                After a theme change: pick a background from the pool if the theme brought its own
@@ -650,6 +722,7 @@ case ${1:-} in
   tick) tick "${2:-}" ;;
   status) status ;;
   interval) bg_interval "${2:-}" ;;
+  folder) shift; bg_folder "$@" ;;
   bg)
     case ${2:-} in
       next) bg_rotate "manual" ;;

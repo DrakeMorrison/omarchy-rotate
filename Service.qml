@@ -8,6 +8,7 @@ import Quickshell.Io
 //
 //   omarchy-shell rotate next     change the background now
 //   omarchy-shell rotate interval 1h   change how often the background rotates
+//   omarchy-shell rotate folder all    every theme pulls from BG_DIR ("gruvbox gruvbox-light": only those)
 //   omarchy-shell rotate toggle   flip between the light and dark theme
 //   omarchy-shell rotate tick     run a scheduling pass
 //   omarchy-shell rotate status   plain-text status
@@ -87,6 +88,11 @@ Item {
 
     function interval(value: string): string {
       root.run(["interval", value])
+      return "ok"
+    }
+
+    function folder(themes: string): string {
+      root.run(["folder"].concat(themes.trim().split(/\s+/)))
       return "ok"
     }
 

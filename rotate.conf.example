@@ -14,9 +14,16 @@ BG_INTERVAL="2h"
 #   or a space-separated list of theme slugs: "gruvbox catppuccin-latte"
 BG_THEMES="auto"
 
-# Use one folder of images for every rotating theme instead of per-theme folders.
+# Use one folder of images instead of per-theme folders.
 # Leave empty to use ~/.config/omarchy/backgrounds/<theme>/ plus the theme's own backgrounds.
 BG_DIR=""
+
+# Which themes pull from BG_DIR (`omarchy-rotate folder ...` sets this for you).
+#   "*"  = every theme: the folder overrides each theme's own backgrounds
+#   or a space-separated list of theme slugs: "gruvbox gruvbox-light"
+#          only those use the folder; every other theme keeps its own backgrounds
+#          (and rotates through them or not according to BG_THEMES)
+BG_DIR_THEMES="*"
 
 # true = only use your own images, never the theme's built-in backgrounds
 BG_USER_ONLY="false"
