@@ -2,7 +2,7 @@
 
 # omarchy:summary=Rotate backgrounds on a schedule and switch light/dark themes by time of day
 # omarchy:args=<command> [args...]
-# omarchy:examples=omarchy-rotate status | omarchy-rotate bg next | omarchy-rotate theme toggle
+# omarchy:examples=omarchy-rotate status | omarchy-rotate interval 1h | omarchy-rotate bg next | omarchy-rotate theme toggle
 #
 # Works on Omarchy 3.8.x (legacy layout) and Omarchy quattro (4.x).
 # State and scheduling are driven by an idempotent `tick`, so it does not
@@ -301,6 +301,31 @@ bg_mark() {
   state_set bg-last "$(date +%s)"
 }
 
+# Show or change BG_INTERVAL. Setting it rewrites that one line of the config
+# and restarts the interval, so the next change lands on the new schedule.
+bg_interval() {
+  local value=${1:-} secs
+  if [[ -z $value ]]; then
+    echo "$BG_INTERVAL"
+    return
+  fi
+
+  secs=$(parse_interval "$value")
+  [[ $secs == invalid ]] && die "invalid interval '$value' (try 30m, 1h, 2h, 1d, wake or off)"
+  (( secs > 0 && secs < 300 )) && echo "note: ticks run every 5 minutes, so $value behaves like 5m" >&2
+
+  [[ -f $CONFIG_FILE ]] || write_default_config
+  if grep -qE '^[[:space:]]*BG_INTERVAL=' "$CONFIG_FILE"; then
+    sed -i --follow-symlinks -E "s|^[[:space:]]*BG_INTERVAL=.*|BG_INTERVAL=\"$value\"|" "$CONFIG_FILE"
+  else
+    printf '\nBG_INTERVAL="%s"\n' "$value" >>"$CONFIG_FILE"
+  fi
+
+  BG_INTERVAL=$value
+  bg_mark
+  log "bg: interval set to $value"
+}
+
 # Clock-aligned bucket number: with 2h, buckets flip at 00:00, 02:00, 04:00 local time.
 bg_bucket() {
   local interval=$1
@@ -574,6 +599,7 @@ Usage: omarchy-rotate <command>
 
   status                 Show what rotation and the schedule will do next
   tick [--wake]          Run one scheduling pass (what the timer calls)
+  interval [30m|1h|...]  Show or set how often the background rotates (also: wake, off)
   bg next                Change the background now
   bg mark                Restart the background interval (used by the theme-set hook)
   bg list                List the images rotation would pick from
@@ -596,6 +622,7 @@ load_config
 case ${1:-} in
   tick) tick "${2:-}" ;;
   status) status ;;
+  interval) bg_interval "${2:-}" ;;
   bg)
     case ${2:-} in
       next) bg_rotate "manual" ;;

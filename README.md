@@ -29,8 +29,9 @@ The shell service ticks every 5 minutes on its own, ticks with `--wake` when the
 shell starts, restarts the interval when the theme changes, and adds IPC:
 
 ```bash
-omarchy-shell rotate next     # change the background now
-omarchy-shell rotate toggle   # flip light/dark
+omarchy-shell rotate next          # change the background now
+omarchy-shell rotate interval 1h   # change how often the background rotates
+omarchy-shell rotate toggle        # flip light/dark
 omarchy-shell rotate status
 ```
 
@@ -59,7 +60,8 @@ user timer that runs a scheduling pass every 5 minutes. `./uninstall.sh` reverse
 
 The plugin never edits your Omarchy config files: it only calls `omarchy theme set` /
 `omarchy theme bg set` (the same commands the menu uses) and keeps its own state in
-`~/.local/state/omarchy-rotate/`. The config file is only written if it doesn't exist.
+`~/.local/state/omarchy-rotate/`. Its own config file is only written if it doesn't exist,
+or when you run `omarchy-rotate interval <value>` (which rewrites just the `BG_INTERVAL` line).
 
 ## Configuration
 
@@ -82,6 +84,13 @@ DARK_AT="19:00"
 NOTIFY="false"
 ```
 
+Change the rotation frequency without opening the file:
+
+```bash
+omarchy-rotate interval 1h     # 30m, 1h, 2h, 4h, 1d ... | wake | off
+omarchy-rotate interval        # show the current value
+```
+
 Intervals are clock-aligned: `2h` flips at 00:00, 02:00, 04:00 … local time;
 `1d` flips at midnight (or on the first wake after it, with `BG_ON_WAKE`).
 
@@ -89,6 +98,7 @@ Intervals are clock-aligned: `2h` flips at 00:00, 02:00, 04:00 … local time;
 
 ```
 omarchy-rotate status            what rotation and the schedule will do next
+omarchy-rotate interval [1h]     show or set how often the background rotates
 omarchy-rotate bg next           change the background now
 omarchy-rotate bg list           images it would pick from for the current theme
 omarchy-rotate theme toggle      flip between THEME_LIGHT and THEME_DARK

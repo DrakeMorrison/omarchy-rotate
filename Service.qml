@@ -7,6 +7,7 @@ import Quickshell.Io
 // restarts the background interval when the theme changes, and exposes IPC:
 //
 //   omarchy-shell rotate next     change the background now
+//   omarchy-shell rotate interval 1h   change how often the background rotates
 //   omarchy-shell rotate toggle   flip between the light and dark theme
 //   omarchy-shell rotate tick     run a scheduling pass
 //   omarchy-shell rotate status   plain-text status
@@ -80,6 +81,11 @@ Item {
 
     function next(): string {
       root.run(["bg", "next"])
+      return "ok"
+    }
+
+    function interval(value: string): string {
+      root.run(["interval", value])
       return "ok"
     }
 
