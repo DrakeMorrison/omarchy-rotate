@@ -28,8 +28,10 @@ BG_DIR_THEMES="*"
 # true = only use your own images, never the theme's built-in backgrounds
 BG_USER_ONLY="false"
 
-# random | sequential
-BG_ORDER="random"
+# shuffle    = every image once in random order, then reshuffle (no early repeats)
+# random     = any image but the current one each time (repeats can come soon)
+# sequential = in filename order
+BG_ORDER="shuffle"
 
 # Also pick a fresh background when the laptop boots or wakes from sleep
 BG_ON_WAKE="true"

@@ -84,7 +84,7 @@ BG_THEMES="auto"          # auto | "*" | "gruvbox catppuccin-latte"
 BG_DIR=""                 # one folder of images instead of per-theme folders (optional)
 BG_DIR_THEMES="*"         # "*" = every theme pulls from BG_DIR | "gruvbox gruvbox-light" = only those
 BG_USER_ONLY="false"      # true = ignore the theme's built-in backgrounds
-BG_ORDER="random"         # random | sequential
+BG_ORDER="shuffle"        # shuffle (no repeats until all shown) | random | sequential
 BG_ON_WAKE="true"         # fresh background on boot / wake from sleep
 
 THEME_SCHEDULE="on"

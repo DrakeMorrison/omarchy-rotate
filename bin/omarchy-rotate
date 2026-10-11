@@ -48,7 +48,7 @@ set_defaults() {
   BG_DIR_THEMES="*"       # which themes pull from BG_DIR: "*" = all of them, or a list
                           # ("gruvbox gruvbox-light"); the rest keep their own backgrounds
   BG_USER_ONLY="false"    # true = ignore the theme's built-in backgrounds, use only your own
-  BG_ORDER="random"       # random | sequential
+  BG_ORDER="shuffle"      # shuffle (every image once, then reshuffle) | random | sequential
   BG_ON_WAKE="true"       # also rotate when the laptop boots or wakes from sleep
   BG_WAKE_GAP="900"       # seconds without a tick that counts as "was asleep"
 
@@ -103,8 +103,10 @@ BG_DIR_THEMES="*"
 # true = only use your own images, never the theme's built-in backgrounds
 BG_USER_ONLY="false"
 
-# random | sequential
-BG_ORDER="random"
+# shuffle    = every image once in random order, then reshuffle (no early repeats)
+# random     = any image but the current one each time (repeats can come soon)
+# sequential = in filename order
+BG_ORDER="shuffle"
 
 # Also pick a fresh background when the laptop boots or wakes from sleep
 BG_ON_WAKE="true"
@@ -296,6 +298,8 @@ bg_rotate() {
       [[ $(readlink -f "${candidates[$i]}") == "$current" ]] && { idx=$i; break; }
     done
     pick=${candidates[$(( (idx + 1) % total ))]}
+  elif [[ $BG_ORDER == "shuffle" ]]; then
+    pick=$(bg_shuffle_pick "$theme" "$current" "${candidates[@]}")
   else
     local -a pool=()
     local c
@@ -309,6 +313,41 @@ bg_rotate() {
   bg_mark
   log "bg: $reason -> $(basename "$pick") (theme $theme, $total candidates)"
   notify "Background" "$(basename "$pick")" -t 2000
+}
+
+# Shuffle without repeats: pick at random from the images not yet shown this
+# cycle; once every image has been shown, start a new cycle. The shown list is
+# kept per pool (BG_DIR or theme), so images added mid-cycle join it and
+# removed ones simply drop out.
+bg_shuffle_pick() {
+  local theme=$1 current=$2; shift 2
+  local key file c r
+  if bg_uses_dir "$theme"; then key=$(readlink -f "${BG_DIR/#\~/$HOME}"); else key=$theme; fi
+  file="$STATE_DIR/bg-shown-$(printf '%s' "$key" | md5sum | cut -c1-12)"
+
+  local -A shown=()
+  if [[ -f $file ]]; then
+    while IFS= read -r c; do [[ -n $c ]] && shown[$c]=1; done <"$file"
+  fi
+  [[ -n $current ]] && shown[$current]=1
+
+  local -a pool=()
+  for c in "$@"; do
+    r=$(readlink -f "$c")
+    [[ -n ${shown[$r]:-} ]] || pool+=("$c")
+  done
+  if (( ${#pool[@]} == 0 )); then
+    # Cycle complete: everything but what is on screen now is fair game again.
+    : >"$file"
+    for c in "$@"; do
+      [[ $(readlink -f "$c") == "$current" ]] || pool+=("$c")
+    done
+  fi
+
+  local pick
+  pick=$(printf '%s\n' "${pool[@]}" | shuf -n1)
+  readlink -f "$pick" >>"$file"
+  printf '%s\n' "$pick"
 }
 
 # Record "a background was just chosen" so the interval restarts from now.
